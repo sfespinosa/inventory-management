@@ -27,6 +27,47 @@
         </div>
       </div>
 
+      <!-- Submitted Restocking Orders — shown only when restocking orders exist -->
+      <div v-if="restockingOrders.length > 0" class="card">
+        <div class="card-header">
+          <h3 class="card-title">Submitted Restocking Orders ({{ restockingOrders.length }})</h3>
+        </div>
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Order #</th>
+                <th>Submitted</th>
+                <th>Items</th>
+                <th class="col-value">Total Value</th>
+                <th>Lead Time</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="ro in restockingOrders" :key="ro.order_number">
+                <td><strong>{{ ro.order_number }}</strong></td>
+                <td>{{ formatDate(ro.submitted_at) }}</td>
+                <td>
+                  <details class="items-details">
+                    <summary class="items-summary">{{ ro.items.length }} items</summary>
+                    <div class="items-dropdown">
+                      <div v-for="item in ro.items" :key="item.sku" class="item-entry">
+                        <span class="item-name">{{ item.name }}</span>
+                        <span class="item-meta">Qty: {{ item.quantity }} @ ${{ item.unit_cost.toLocaleString() }} &middot; {{ item.lead_time_days }}d lead</span>
+                      </div>
+                    </div>
+                  </details>
+                </td>
+                <td class="col-value"><strong>${{ ro.total_value.toLocaleString() }}</strong></td>
+                <td>Up to {{ ro.max_lead_time_days }} days</td>
+                <td><span class="badge submitted">Submitted</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       <div class="card">
         <div class="card-header">
           <h3 class="card-title">{{ t('orders.allOrders') }} ({{ orders.length }})</h3>
@@ -95,6 +136,7 @@ export default {
     const loading = ref(true)
     const error = ref(null)
     const orders = ref([])
+    const restockingOrders = ref([])
 
     // Use shared filters
     const {
@@ -109,7 +151,10 @@ export default {
       try {
         loading.value = true
         const filters = getCurrentFilters()
-        const fetchedOrders = await api.getOrders(filters)
+        const [fetchedOrders, fetchedRestocking] = await Promise.all([
+          api.getOrders(filters),
+          api.getRestockingOrders().catch(() => [])
+        ])
 
         // Sort orders by order_date (earliest first)
         orders.value = fetchedOrders.sort((a, b) => {
@@ -117,6 +162,8 @@ export default {
           const dateB = new Date(b.order_date)
           return dateA - dateB
         })
+
+        restockingOrders.value = fetchedRestocking
       } catch (err) {
         error.value = 'Failed to load orders: ' + err.message
       } finally {
@@ -160,6 +207,7 @@ export default {
       loading,
       error,
       orders,
+      restockingOrders,
       getOrdersByStatus,
       getOrderStatusClass,
       formatDate,
@@ -275,5 +323,11 @@ export default {
 .item-meta {
   font-size: 0.813rem;
   color: #64748b;
+}
+
+/* Restocking-specific styles */
+.badge.submitted {
+  background: #ede9fe;
+  color: #5b21b6;
 }
 </style>

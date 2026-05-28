@@ -2,7 +2,25 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
 from pydantic import BaseModel
+from datetime import datetime, timedelta
 from mock_data import inventory_items, orders, demand_forecasts, backlog_items, spending_summary, monthly_spending, category_spending, recent_transactions, purchase_orders
+
+# In-memory store for restocking orders (cleared on server restart)
+restocking_orders = []
+_restocking_counter = 0
+
+# In-memory store for tasks (cleared on server restart)
+tasks_store = []
+_task_counter = 0
+
+# Lead times in days by product category
+CATEGORY_LEAD_TIMES = {
+    'circuit boards': 14,
+    'sensors': 10,
+    'actuators': 12,
+    'controllers': 21,
+    'power supplies': 7,
+}
 
 app = FastAPI(title="Factory Inventory Management System")
 
@@ -119,6 +137,36 @@ class CreatePurchaseOrderRequest(BaseModel):
     unit_cost: float
     expected_delivery_date: str
     notes: Optional[str] = None
+
+class RestockingOrderItem(BaseModel):
+    sku: str
+    name: str
+    category: str
+    quantity: int
+    unit_cost: float
+    lead_time_days: int
+
+class CreateRestockingOrderRequest(BaseModel):
+    items: List[RestockingOrderItem]
+    total_budget: float
+
+class RestockingOrder(BaseModel):
+    id: str
+    order_number: str
+    status: str
+    submitted_at: str
+    items: List[dict]
+    total_value: float
+    max_lead_time_days: int
+
+class Task(BaseModel):
+    id: str
+    title: str
+    status: str  # 'pending' | 'completed'
+    created_at: str
+
+class CreateTaskRequest(BaseModel):
+    title: str
 
 # API endpoints
 @app.get("/")
@@ -303,6 +351,82 @@ def get_monthly_trends():
     result = list(months.values())
     result.sort(key=lambda x: x['month'])
     return result
+
+@app.post("/api/restocking/orders", response_model=RestockingOrder)
+def create_restocking_order(request: CreateRestockingOrderRequest):
+    """Submit a restocking order generated from demand forecasts"""
+    global _restocking_counter
+    _restocking_counter += 1
+
+    items_as_dicts = [item.dict() for item in request.items]
+    total_value = sum(item.quantity * item.unit_cost for item in request.items)
+    max_lead = max((item.lead_time_days for item in request.items), default=0)
+
+    order = {
+        "id": f"rs-{_restocking_counter}",
+        "order_number": f"RS-{_restocking_counter:03d}",
+        "status": "Submitted",
+        "submitted_at": datetime.utcnow().isoformat(),
+        "items": items_as_dicts,
+        "total_value": round(total_value, 2),
+        "max_lead_time_days": max_lead,
+    }
+    restocking_orders.append(order)
+    return order
+
+
+@app.get("/api/restocking/orders", response_model=List[RestockingOrder])
+def get_restocking_orders():
+    """Return all submitted restocking orders"""
+    return list(reversed(restocking_orders))
+
+
+@app.get("/api/inventory/lead-times")
+def get_lead_times():
+    """Return per-category lead times used by the restocking planner"""
+    return CATEGORY_LEAD_TIMES
+
+
+@app.get("/api/tasks", response_model=List[Task])
+def get_tasks():
+    """Return all tasks"""
+    return tasks_store
+
+
+@app.post("/api/tasks", response_model=Task, status_code=201)
+def create_task(request: CreateTaskRequest):
+    """Create a new task"""
+    global _task_counter
+    _task_counter += 1
+    task = {
+        "id": f"task-{_task_counter}",
+        "title": request.title,
+        "status": "pending",
+        "created_at": datetime.utcnow().isoformat() + "Z",
+    }
+    tasks_store.append(task)
+    return task
+
+
+@app.delete("/api/tasks/{task_id}", status_code=204)
+def delete_task(task_id: str):
+    """Delete a task by ID"""
+    global tasks_store
+    original_len = len(tasks_store)
+    tasks_store = [t for t in tasks_store if t["id"] != task_id]
+    if len(tasks_store) == original_len:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+
+@app.patch("/api/tasks/{task_id}", response_model=Task)
+def toggle_task(task_id: str):
+    """Toggle a task between pending and completed"""
+    task = next((t for t in tasks_store if t["id"] == task_id), None)
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+    task["status"] = "completed" if task["status"] == "pending" else "pending"
+    return task
+
 
 if __name__ == "__main__":
     import uvicorn
